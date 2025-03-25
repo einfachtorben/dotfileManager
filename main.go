@@ -14,6 +14,8 @@ import (
 
 const backupDir = "./dotfiles_backup"
 
+var dryRun bool = false
+
 // checkIfInstalled checks if a package is installed via the package manager
 func checkIfInstalled(pkg string) bool {
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("command -v %s >/dev/null 2>&1 || dpkg -l %s >/dev/null 2>&1 || pacman -Q %s >/dev/null 2>&1 || rpm -q %s >/dev/null 2>&1 || equery list %s >/dev/null 2>&1", pkg, pkg, pkg, pkg, pkg))
@@ -33,69 +35,15 @@ func cloneRepo(repoURL, dest string) error {
 // backupDotfile backs up an existing dotfile
 func backupDotfile(dest string) {
 	if _, err := os.Stat(dest); err == nil {
+		if dryRun {
+			fmt.Printf("[Dry Run] Would back up existing dotfile: %s\n", dest)
+			return
+		}
 		os.MkdirAll(backupDir, os.ModePerm)
 		backupPath := filepath.Join(backupDir, filepath.Base(dest))
 		os.Rename(dest, backupPath)
 		fmt.Printf("Backed up existing dotfile: %s -> %s\n", dest, backupPath)
 	}
-}
-
-// rollbackDotfiles restores backed-up dotfiles
-func rollbackDotfiles() {
-	files, err := ioutil.ReadDir(backupDir)
-	if err != nil {
-		log.Fatal("No backups found or failed to read backup directory.")
-	}
-
-	homeDir, _ := os.UserHomeDir()
-	for _, file := range files {
-		backupPath := filepath.Join(backupDir, file.Name())
-		originalPath := filepath.Join(homeDir, "."+file.Name())
-		os.Rename(backupPath, originalPath)
-		fmt.Printf("Restored %s\n", originalPath)
-	}
-	fmt.Println("Rollback completed.")
-}
-
-// tuiSelection provides a UI for selecting dotfiles to apply
-func tuiSelection(available []string, installed map[string]bool) []string {
-	app := tview.NewApplication()
-	list := tview.NewList()
-
-	selected := make(map[string]bool)
-
-	// Populate list with available dotfiles
-	for _, item := range available {
-		isInstalled := installed[item]
-		status := "❌" // Not installed
-		if isInstalled {
-			status = "✔️"
-		}
-		selected[item] = isInstalled
-		list.AddItem(fmt.Sprintf("[%s] %s", status, item), "Press ENTER to toggle", 0, func() {
-			selected[item] = !selected[item]
-		})
-	}
-
-	// Exit button
-	list.AddItem("Apply and Exit", "Proceed with selected dotfiles", 0, func() {
-		app.Stop()
-	})
-
-	// Run the UI
-	if err := app.SetRoot(list, true).Run(); err != nil {
-		log.Fatalf("Failed to start TUI: %v", err)
-	}
-
-	// Collect selected dotfiles
-	var selectedFiles []string
-	for file, include := range selected {
-		if include {
-			selectedFiles = append(selectedFiles, file)
-		}
-	}
-
-	return selectedFiles
 }
 
 // applyDotfiles applies selected dotfiles by creating symbolic links
@@ -109,6 +57,10 @@ func applyDotfiles(repoPath string, selected []string) {
 		src := filepath.Join(repoPath, file)
 		dest := filepath.Join(homeDir, "."+file)
 		backupDotfile(dest)
+		if dryRun {
+			fmt.Printf("[Dry Run] Would create symlink: %s -> %s\n", src, dest)
+			continue
+		}
 		err := os.Symlink(src, dest)
 		if err != nil {
 			fmt.Printf("Failed to create symlink for %s: %v\n", file, err)
@@ -120,8 +72,14 @@ func applyDotfiles(repoPath string, selected []string) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: dotfile-manager <GitHub repo URL> [--rollback]")
+		fmt.Println("Usage: dotfile-manager <GitHub repo URL> [--rollback] [--dry-run]")
 		os.Exit(1)
+	}
+
+	for _, arg := range os.Args {
+		if arg == "--dry-run" {
+			dryRun = true
+		}
 	}
 
 	if len(os.Args) == 2 && os.Args[1] == "--rollback" {
